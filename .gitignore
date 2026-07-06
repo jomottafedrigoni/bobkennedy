@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+
+data/Transazioni/
+data/Dati Industriali/
+data/cache
+
+reports/
+
+.vscode/
+.DS_Store
