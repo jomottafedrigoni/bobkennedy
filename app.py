@@ -56,6 +56,26 @@ MAPPATURA_DEFAULT = {
     "07.01.01.180.01RITR_MAINT": "VIC - Maintenance"
 }
 
+# --- SEZIONE INFO DYNAMICS ---
+with st.expander("📌 Codici Conto per Filtro Dynamics (Clicca per espandere)", expanded=True):
+    # Estrazione dei soli codici conto (formato ##.##.##.###.##) dai primi 15 caratteri delle chiavi
+    codici_conto_unici = sorted(list(set([chiave[:15] for chiave in MAPPATURA_DEFAULT.keys()])))
+    
+    st.markdown("Usa questi codici per filtrare le transazioni direttamente su **Dynamics**.")
+    
+    col_tab, col_stringa = st.columns([1, 2])
+    
+    with col_tab:
+        df_codici = pd.DataFrame(codici_conto_unici, columns=["Codice Conto"])
+        st.dataframe(df_codici, hide_index=True, use_container_width=True)
+        
+    with col_stringa:
+        st.markdown("**Stringa pronta per il filtro Dynamics (OR):**")
+        stringa_dynamics = "|".join(codici_conto_unici)
+        st.code(stringa_dynamics, language="text")
+
+st.markdown("---")
+
 def elabora_report(df):
     df_out = df.copy()
 
