@@ -8,7 +8,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- DIZIONARIO DI MAPPATURA AGGIORNATO ---
+# --- DIZIONARIO DI MAPPATURA ---
 MAPPATURA_DEFAULT = {
     "07.02.02.740.00RITR_CUSU": "Canteen expenses",
     "07.02.02.740.00RITR_HSE": "Canteen expenses",
@@ -30,7 +30,7 @@ MAPPATURA_DEFAULT = {
     "07.02.02.750.00RITR_HSE": "Other",
     "07.04.04.510.04RITR_PLA": "Other",
     "07.01.01.210.00RITR_HSE": "Spare parts and Equipments",
-    "07.01.01.210.00RITR_MAINT": "VIC - Maintenance (VAR)",
+    "07.01.01.210.00RITR_MAINT": "VIC - Maintenance",
     "07.04.04.240.00RITR_QUAIND": "Subscription and Associations fees",
     "07.02.02.430.02RITR_OPIND": "Travel expenses",
     "07.02.02.430.07RITR_OPIND": "Travel expenses",
@@ -56,9 +56,22 @@ MAPPATURA_DEFAULT = {
 
 st.title("📊 Rielaborazione Report Transazioni")
 
-# --- CARICAMENTO FILE IN SIDEBAR PER ESSERE SEMPRE DISPONIBILE ---
+# --- CARICAMENTO FILE IN SIDEBAR ---
 st.sidebar.header("📂 Caricamento Dati")
 uploaded_excel = st.sidebar.file_uploader("Carica Excel (.xlsx, .xls)", type=["xlsx", "xls"])
+
+# --- FUNZIONE FORMATTAZIONE VALUTA E NEGATIVI CON PARENTESI ---
+def formatta_numero(val):
+    if pd.isna(val):
+        return ""
+    try:
+        val = float(val)
+        if val < 0:
+            return f"({abs(val):,.0f})".replace(",", ".")
+        else:
+            return f"{val:,.0f}".replace(",", ".")
+    except (ValueError, TypeError):
+        return str(val)
 
 # --- SEZIONE INFO DYNAMICS (Visibile SOLO finché non carichi l'Excel) ---
 if uploaded_excel is None:
@@ -91,7 +104,19 @@ def elabora_report(df):
     else:
         n_provvch = 0
 
-    # 2. ESTRAZIONE E MAPPATURA
+    # 2. INVERSIONE DI SEGNO PER LE COLONNE IMPORTO
+    colonne_importo = [
+        "Importo nella valuta della transazione",
+        "Importo",
+        "Importo nella valuta di dichiarazione"
+    ]
+    
+    for col in colonne_importo:
+        if col in df_out.columns:
+            # Converte in numerico e inverte il segno (* -1)
+            df_out[col] = pd.to_numeric(df_out[col], errors='coerce') * -1
+
+    # 3. ESTRAZIONE E MAPPATURA
     col_valore = "Valore visualizzato conto"
     if col_valore in df_out.columns:
         def estrai_chiave(val):
@@ -121,7 +146,6 @@ def elabora_report(df):
         n_non_mappate = 0
 
     return df_out, n_provvch, n_non_mappate
-
 
 # --- ELABORAZIONE E NAVIGAZIONE PER PAGINE ---
 if uploaded_excel is not None:
@@ -164,8 +188,8 @@ if uploaded_excel is not None:
         
         col_importo = "Importo" if "Importo" in df_sezione.columns else None
         if col_importo:
-            tot_spesa = pd.to_numeric(df_sezione[col_importo], errors='coerce').sum()
-            c2.metric("Spesa Totale Sezione", f"€ {tot_spesa:,.2f}")
+            tot_spesa = df_sezione[col_importo].sum()
+            c2.metric("Spesa Totale Sezione", formatta_numero(tot_spesa))
 
         st.markdown("---")
 
@@ -175,13 +199,12 @@ if uploaded_excel is not None:
 
         if col_data and col_importo and not df_sezione.empty:
             df_sezione["Mese"] = pd.to_datetime(df_sezione[col_data], dayfirst=True, errors='coerce').dt.to_period('M').astype(str)
-            df_sezione[col_importo] = -pd.to_numeric(df_sezione[col_importo], errors='coerce').fillna(0)
 
             # Tabella Pivot
             pivot_df = df_sezione.pivot_table(
                 index="Mese", 
                 columns="Mappatura", 
-                values=-col_importo, 
+                values=col_importo, 
                 aggfunc="sum", 
                 fill_value=0
             )
@@ -190,8 +213,8 @@ if uploaded_excel is not None:
             totale_mensile = pivot_df.sum(axis=1)
             pivot_df.insert(0, "TOTALE MENSILE", totale_mensile)
 
-            # Visualizzazione tabella
-            st.dataframe(pivot_df.style.format("€ {:,.2f}"), use_container_width=True)
+            # Visualizzazione tabella formattata con parentesi per i negativi
+            st.dataframe(pivot_df.style.format(formatta_numero), use_container_width=True)
 
             # Grafico a barre
             st.subheader("📊 Andamento Mensile")
@@ -205,16 +228,32 @@ if uploaded_excel is not None:
 
         st.markdown("---")
         st.subheader("📋 Dettaglio Transazioni")
-        st.dataframe(df_sezione, use_container_width=True)
+        
+        # Formattazione visiva anche per la tabella di dettaglio
+        df_display = df_sezione.copy()
+        colonne_importo = ["Importo nella valuta della transazione", "Importo", "Importo nella valuta di dichiarazione"]
+        
+        # Applichiamo la formattazione visiva con parentesi a tutte le colonne di importo
+        format_dict = {col: formatta_numero for col in colonne_importo if col in df_display.columns}
+        st.dataframe(df_display.style.format(format_dict), use_container_width=True)
 
-        # Download Excel dedicato alla sezione attiva
+        # Download Excel dedicato
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             df_sezione.to_excel(writer, index=False, sheet_name='Dettaglio_Transazioni')
             if col_data and col_importo and not df_sezione.empty:
                 pivot_df.to_excel(writer, sheet_name='Sintesi_Mensile')
-        buffer.seek(0)
+            
+            # Applicazione formattazione rigida per il file Excel scaricabile
+            workbook = writer.book
+            num_format = '#,##0;(#,##0);"-"'
+            for sheet in workbook.worksheets:
+                for row in sheet.iter_rows(min_row=2):
+                    for cell in row:
+                        if isinstance(cell.value, (int, float)):
+                            cell.number_format = num_format
 
+        buffer.seek(0)
         nome_file = "Report_Fixed_Costs.xlsx" if pagina == "📌 Fixed Costs (Costi Fissi)" else "Report_Variable_Costs_VIC.xlsx"
 
         st.download_button(
