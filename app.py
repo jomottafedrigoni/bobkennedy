@@ -8,8 +8,6 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📊 Rielaborazione Report Transazioni")
-
 # --- DIZIONARIO DI MAPPATURA AGGIORNATO ---
 MAPPATURA_DEFAULT = {
     "07.02.02.740.00RITR_CUSU": "Canteen expenses",
@@ -32,7 +30,7 @@ MAPPATURA_DEFAULT = {
     "07.02.02.750.00RITR_HSE": "Other",
     "07.04.04.510.04RITR_PLA": "Other",
     "07.01.01.210.00RITR_HSE": "Spare parts and Equipments",
-    "07.01.01.210.00RITR_MAINT": "VIC - Maintenance",
+    "07.01.01.210.00RITR_MAINT": "VIC - Maintenance (VAR)",
     "07.04.04.240.00RITR_QUAIND": "Subscription and Associations fees",
     "07.02.02.430.02RITR_OPIND": "Travel expenses",
     "07.02.02.430.07RITR_OPIND": "Travel expenses",
@@ -51,26 +49,28 @@ MAPPATURA_DEFAULT = {
     "07.02.02.430.01RITR_OPIND": "Travel expenses",
     "07.02.02.430.01RITR_QUAIND": "Travel expenses",
     "07.02.02.430.05RITR_OPIND": "Travel expenses",
-    "07.01.01.180.02RITR_MAINT": "VIC - Maintenance",
-    "07.01.01.180.01RITR_MAINT": "VIC - Maintenance"
+    # --- COSTI VARIABILI (VIC) ---
+    "07.01.01.180.02RITR_MAINT": "VIC - Maintenance (VAR)",
+    "07.01.01.180.01RITR_MAINT": "VIC - Maintenance (VAR)"
 }
 
-# --- CARICAMENTO FILE ---
-uploaded_excel = st.file_uploader("Carica il file Excel del Report (.xlsx, .xls)", type=["xlsx", "xls"])
+st.title("📊 Rielaborazione Report Transazioni")
+
+# --- CARICAMENTO FILE IN SIDEBAR PER ESSERE SEMPRE DISPONIBILE ---
+st.sidebar.header("📂 Caricamento Dati")
+uploaded_excel = st.sidebar.file_uploader("Carica Excel (.xlsx, .xls)", type=["xlsx", "xls"])
 
 # --- SEZIONE INFO DYNAMICS (Visibile SOLO finché non carichi l'Excel) ---
 if uploaded_excel is None:
-    st.info("👋 **Benvenuto!** Copia i codici sottostanti per filtrare su Dynamics, poi carica il file esportato.")
+    st.info("👋 **Benvenuto!** Copia i codici sottostanti per filtrare su Dynamics, poi carica il file esportato dalla barra laterale a sinistra.")
     
     with st.expander("📌 Codici Conto per Filtro Dynamics", expanded=True):
-        # Estrazione codici unici
         codici_conto_unici = sorted(list(set([chiave[:15] for chiave in MAPPATURA_DEFAULT.keys()])))
         
         col1, col2 = st.columns(2)
         
         with col1:
             st.markdown("**1. Elenco in colonna (seleziona e copia stile Excel):**")
-            # Un'area di testo puro da cui selezionare e copiare la colonna direttamente
             testo_colonna = "\n".join(codici_conto_unici)
             st.text_area("Copia colonna", testo_colonna, height=220)
             
@@ -103,18 +103,14 @@ def elabora_report(df):
             return str(val).strip()
 
         df_out["Codice Mappatura Estratto"] = df_out[col_valore].apply(estrai_chiave)
-        
-        # Mappatura e Drop di tutte le voci fuori lista
         df_out["Mappatura"] = df_out["Codice Mappatura Estratto"].map(MAPPATURA_DEFAULT)
         
-        # Righe non presenti nel dizionario
+        # Rimozione non mappati
         maschera_non_mappate = df_out["Mappatura"].isna()
         n_non_mappate = maschera_non_mappate.sum()
-        
-        # DROPPING DELLE RIGHE ESCLUSE
         df_out = df_out[~maschera_non_mappate]
 
-        # Posizionamento colonna
+        # Posizionamento colonna Mappatura
         idx = df_out.columns.get_loc(col_valore) + 1
         cols = list(df_out.columns)
         mappatura_col = cols.pop(cols.index("Mappatura"))
@@ -126,57 +122,63 @@ def elabora_report(df):
 
     return df_out, n_provvch, n_non_mappate
 
-# --- ELABORAZIONE REPORT (quando l'Excel è presente) ---
+
+# --- ELABORAZIONE E NAVIGAZIONE PER PAGINE ---
 if uploaded_excel is not None:
     try:
         df_input = pd.read_excel(uploaded_excel)
         df_completo, n_provvch, n_non_mappate = elabora_report(df_input)
 
-        # Notifiche di scarto
-        if n_provvch > 0 or n_non_mappate > 0:
-            st.warning(
-                f"🧹 **Filtro applicato:** Rimosse **{n_provvch}** righe 'PROVVCH' "
-                f"e **{n_non_mappate}** righe non appartenenti alle categorie mappate."
-            )
-
-        # --- MENU A COMPARSA PER IL FILTRO ---
-        st.sidebar.header("🔍 Filtri Report")
-        
-        categorie_disponibili = ["TUTTE LE CATEGORIE"] + sorted(df_completo["Mappatura"].unique())
-        
-        categoria_selezionata = st.sidebar.selectbox(
-            "Seleziona la Mappatura da visualizzare:",
-            options=categorie_disponibili,
-            index=0
+        # SELEZIONE PAGINA
+        st.sidebar.markdown("---")
+        st.sidebar.header("🌐 Navigazione")
+        pagina = st.sidebar.radio(
+            "Seleziona la Vista:",
+            ["📌 Fixed Costs (Costi Fissi)", "⚙️ Variable Industrial Costs (VIC)"]
         )
 
-        if categoria_selezionata == "TUTTE LE CATEGORIE":
-            df_filtered = df_completo.copy()
+        # SEPARAZIONE NETTA DEI DATI TRA FISSI E VARIABILI
+        if pagina == "📌 Fixed Costs (Costi Fissi)":
+            df_sezione = df_completo[df_completo["Mappatura"] != "VIC - Maintenance (VAR)"].copy()
+            st.header("📌 Fixed Costs (Costi Fissi)")
         else:
-            df_filtered = df_completo[df_completo["Mappatura"] == categoria_selezionata]
+            df_sezione = df_completo[df_completo["Mappatura"] == "VIC - Maintenance (VAR)"].copy()
+            st.header("⚙️ Variable Industrial Costs - Maintenance (VAR)")
 
-        # KPI
+        # Notifiche di scarto generali
+        if n_provvch > 0 or n_non_mappate > 0:
+            st.caption(f"ℹ️ Dati filtrati globali: Rimosse {n_provvch} righe 'PROVVCH' e {n_non_mappate} righe non mappate.")
+
+        # FILTRO SOTTO-CATEGORIA (Solo se siamo in Fixed Costs)
+        if pagina == "📌 Fixed Costs (Costi Fissi)":
+            st.sidebar.markdown("---")
+            st.sidebar.header("🔍 Filtri Categoria")
+            categorie_disponibili = ["TUTTE LE CATEGORIE FISSE"] + sorted(df_sezione["Mappatura"].unique())
+            cat_sel = st.sidebar.selectbox("Seleziona la Mappatura:", options=categorie_disponibili)
+            if cat_sel != "TUTTE LE CATEGORIE FISSE":
+                df_sezione = df_sezione[df_sezione["Mappatura"] == cat_sel]
+
+        # KPI DELLA SEZIONE SELEZIONATA
         c1, c2 = st.columns(2)
-        c1.metric("Totale Transazioni Valide", len(df_filtered))
+        c1.metric("Transazioni Trovate", len(df_sezione))
         
-        col_importo = "Importo" if "Importo" in df_filtered.columns else None
+        col_importo = "Importo" if "Importo" in df_sezione.columns else None
         if col_importo:
-            tot_spesa = pd.to_numeric(df_filtered[col_importo], errors='coerce').sum()
-            c2.metric("Spesa Totale Mappata", f"€ {tot_spesa:,.2f}")
+            tot_spesa = pd.to_numeric(df_sezione[col_importo], errors='coerce').sum()
+            c2.metric("Spesa Totale Sezione", f"€ {tot_spesa:,.2f}")
 
         st.markdown("---")
 
         # --- SEZIONE REPORTING MENSILE ---
-        st.subheader("📈 Report Sintetico per Mese e Mappatura")
-        
-        col_data = "Data" if "Data" in df_filtered.columns else ("Data documento" if "Data documento" in df_filtered.columns else None)
+        st.subheader("📈 Report Sintetico Mensile")
+        col_data = "Data" if "Data" in df_sezione.columns else ("Data documento" if "Data documento" in df_sezione.columns else None)
 
-        if col_data and col_importo and not df_filtered.empty:
-            df_filtered["Mese"] = pd.to_datetime(df_filtered[col_data], dayfirst=True, errors='coerce').dt.to_period('M').astype(str)
-            df_filtered[col_importo] = pd.to_numeric(df_filtered[col_importo], errors='coerce').fillna(0)
+        if col_data and col_importo and not df_sezione.empty:
+            df_sezione["Mese"] = pd.to_datetime(df_sezione[col_data], dayfirst=True, errors='coerce').dt.to_period('M').astype(str)
+            df_sezione[col_importo] = pd.to_numeric(df_sezione[col_importo], errors='coerce').fillna(0)
 
-            # Tabella Pivot base (Mese x Mappatura)
-            pivot_df = df_filtered.pivot_table(
+            # Tabella Pivot
+            pivot_df = df_sezione.pivot_table(
                 index="Mese", 
                 columns="Mappatura", 
                 values=col_importo, 
@@ -184,41 +186,41 @@ if uploaded_excel is not None:
                 fill_value=0
             )
 
-            # 1. Calcolo Somma Mensile di tutte le categorie
+            # Inseriamo la colonna Totale Mensile
             totale_mensile = pivot_df.sum(axis=1)
-
-            # 2. Inseriamo la colonna TOTALE MENSILE in PRIMA POSIZIONE
             pivot_df.insert(0, "TOTALE MENSILE", totale_mensile)
 
-            # Visualizzazione tabella con Totale in prima colonna
+            # Visualizzazione tabella
             st.dataframe(pivot_df.style.format("€ {:,.2f}"), use_container_width=True)
 
-            # Grafico a barre (escludendo la colonna TOTALE MENSILE dal grafico)
-            st.subheader("📊 Andamento Mensile delle Spese")
+            # Grafico a barre
+            st.subheader("📊 Andamento Mensile")
             chart_data = pivot_df.drop(columns=["TOTALE MENSILE"], errors="ignore")
             st.bar_chart(chart_data)
 
-        elif df_filtered.empty:
-            st.warning("Nessun dato presente dopo l'applicazione dei filtri.")
+        elif df_sezione.empty:
+            st.warning("Nessuna transazione trovata per questa sezione o filtro selezionato.")
         else:
             st.info("Assicurati che le colonne 'Data' e 'Importo' siano presenti nel file.")
 
         st.markdown("---")
-        st.subheader("📋 Dettaglio Transazioni Mappate")
-        st.dataframe(df_filtered, use_container_width=True)
+        st.subheader("📋 Dettaglio Transazioni")
+        st.dataframe(df_sezione, use_container_width=True)
 
-        # Download Excel
+        # Download Excel dedicato alla sezione attiva
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df_filtered.to_excel(writer, index=False, sheet_name='Dettaglio_Transazioni')
-            if col_data and col_importo and not df_filtered.empty:
+            df_sezione.to_excel(writer, index=False, sheet_name='Dettaglio_Transazioni')
+            if col_data and col_importo and not df_sezione.empty:
                 pivot_df.to_excel(writer, sheet_name='Sintesi_Mensile')
         buffer.seek(0)
 
+        nome_file = "Report_Fixed_Costs.xlsx" if pagina == "📌 Fixed Costs (Costi Fissi)" else "Report_Variable_Costs_VIC.xlsx"
+
         st.download_button(
-            label="📥 Scarica Report Filtrato in Excel",
+            label=f"📥 Scarica Excel ({pagina})",
             data=buffer,
-            file_name="Report_Transazioni_Mappato.xlsx",
+            file_name=nome_file,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
