@@ -54,13 +54,13 @@ MAPPATURA_DEFAULT = {
     "07.01.01.180.01RITR_MAINT": "VIC - Maintenance (VAR)"
 }
 
-st.title("📊 Rielaborazione Report Transazioni")
+st.title("📊 Rielaborazione Report Transazioni (in k€)")
 
 # --- CARICAMENTO FILE IN SIDEBAR ---
 st.sidebar.header("📂 Caricamento Dati")
 uploaded_excel = st.sidebar.file_uploader("Carica Excel (.xlsx, .xls)", type=["xlsx", "xls"])
 
-# --- FUNZIONE FORMATTAZIONE VALUTA E NEGATIVI CON PARENTESI ---
+# --- FUNZIONE FORMATTAZIONE CON PARENTESI PER NEGATIVI ---
 def formatta_numero(val):
     if pd.isna(val):
         return ""
@@ -73,7 +73,7 @@ def formatta_numero(val):
     except (ValueError, TypeError):
         return str(val)
 
-# --- SEZIONE INFO DYNAMICS (Visibile SOLO finché non carichi l'Excel) ---
+# --- SEZIONE INFO DYNAMICS ---
 if uploaded_excel is None:
     st.info("👋 **Benvenuto!** Copia i codici sottostanti per filtrare su Dynamics, poi carica il file esportato dalla barra laterale a sinistra.")
     
@@ -104,7 +104,7 @@ def elabora_report(df):
     else:
         n_provvch = 0
 
-    # 2. INVERSIONE DI SEGNO PER LE COLONNE IMPORTO
+    # 2. INVERSIONE DI SEGNO E DIVISIONE PER 1000
     colonne_importo = [
         "Importo nella valuta della transazione",
         "Importo",
@@ -113,8 +113,8 @@ def elabora_report(df):
     
     for col in colonne_importo:
         if col in df_out.columns:
-            # Converte in numerico e inverte il segno (* -1)
-            df_out[col] = pd.to_numeric(df_out[col], errors='coerce') * -1
+            # Inverte il segno (* -1) e divide per 1000 (/ 1000)
+            df_out[col] = (pd.to_numeric(df_out[col], errors='coerce') * -1) / 1000.0
 
     # 3. ESTRAZIONE E MAPPATURA
     col_valore = "Valore visualizzato conto"
@@ -164,16 +164,16 @@ if uploaded_excel is not None:
         # SEPARAZIONE NETTA DEI DATI TRA FISSI E VARIABILI
         if pagina == "📌 Fixed Costs (Costi Fissi)":
             df_sezione = df_completo[df_completo["Mappatura"] != "VIC - Maintenance (VAR)"].copy()
-            st.header("📌 Fixed Costs (Costi Fissi)")
+            st.header("📌 Fixed Costs (Costi Fissi) - in k€")
         else:
             df_sezione = df_completo[df_completo["Mappatura"] == "VIC - Maintenance (VAR)"].copy()
-            st.header("⚙️ Variable Industrial Costs - Maintenance (VAR)")
+            st.header("⚙️ Variable Industrial Costs - Maintenance (VAR) - in k€")
 
         # Notifiche di scarto generali
         if n_provvch > 0 or n_non_mappate > 0:
             st.caption(f"ℹ️ Dati filtrati globali: Rimosse {n_provvch} righe 'PROVVCH' e {n_non_mappate} righe non mappate.")
 
-        # FILTRO SOTTO-CATEGORIA (Solo se siamo in Fixed Costs)
+        # FILTRO SOTTO-CATEGORIA
         if pagina == "📌 Fixed Costs (Costi Fissi)":
             st.sidebar.markdown("---")
             st.sidebar.header("🔍 Filtri Categoria")
@@ -189,12 +189,12 @@ if uploaded_excel is not None:
         col_importo = "Importo" if "Importo" in df_sezione.columns else None
         if col_importo:
             tot_spesa = df_sezione[col_importo].sum()
-            c2.metric("Spesa Totale Sezione", formatta_numero(tot_spesa))
+            c2.metric("Spesa Totale Sezione (k€)", formatta_numero(tot_spesa))
 
         st.markdown("---")
 
         # --- SEZIONE REPORTING MENSILE ---
-        st.subheader("📈 Report Sintetico Mensile")
+        st.subheader("📈 Report Sintetico Mensile (k€)")
         col_data = "Data" if "Data" in df_sezione.columns else ("Data documento" if "Data documento" in df_sezione.columns else None)
 
         if col_data and col_importo and not df_sezione.empty:
@@ -213,7 +213,7 @@ if uploaded_excel is not None:
             totale_mensile = pivot_df.sum(axis=1)
             pivot_df.insert(0, "TOTALE MENSILE", totale_mensile)
 
-            # Visualizzazione tabella formattata con parentesi per i negativi
+            # Visualizzazione tabella formattata (divisa per 1000 e tra parentesi)
             st.dataframe(pivot_df.style.format(formatta_numero), use_container_width=True)
 
             # Grafico a barre
@@ -227,24 +227,22 @@ if uploaded_excel is not None:
             st.info("Assicurati che le colonne 'Data' e 'Importo' siano presenti nel file.")
 
         st.markdown("---")
-        st.subheader("📋 Dettaglio Transazioni")
+        st.subheader("📋 Dettaglio Transazioni (k€)")
         
         # Formattazione visiva anche per la tabella di dettaglio
         df_display = df_sezione.copy()
         colonne_importo = ["Importo nella valuta della transazione", "Importo", "Importo nella valuta di dichiarazione"]
         
-        # Applichiamo la formattazione visiva con parentesi a tutte le colonne di importo
         format_dict = {col: formatta_numero for col in colonne_importo if col in df_display.columns}
         st.dataframe(df_display.style.format(format_dict), use_container_width=True)
 
-        # Download Excel dedicato
+        # Download Excel
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             df_sezione.to_excel(writer, index=False, sheet_name='Dettaglio_Transazioni')
             if col_data and col_importo and not df_sezione.empty:
                 pivot_df.to_excel(writer, sheet_name='Sintesi_Mensile')
             
-            # Applicazione formattazione rigida per il file Excel scaricabile
             workbook = writer.book
             num_format = '#,##0;(#,##0);"-"'
             for sheet in workbook.worksheets:
@@ -254,7 +252,7 @@ if uploaded_excel is not None:
                             cell.number_format = num_format
 
         buffer.seek(0)
-        nome_file = "Report_Fixed_Costs.xlsx" if pagina == "📌 Fixed Costs (Costi Fissi)" else "Report_Variable_Costs_VIC.xlsx"
+        nome_file = "Report_Fixed_Costs_kEUR.xlsx" if pagina == "📌 Fixed Costs (Costi Fissi)" else "Report_Variable_Costs_VIC_kEUR.xlsx"
 
         st.download_button(
             label=f"📥 Scarica Excel ({pagina})",
