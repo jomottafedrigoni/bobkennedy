@@ -175,13 +175,13 @@ if uploaded_excel is not None:
 
         if col_data and col_importo and not df_sezione.empty:
             df_sezione["Mese"] = pd.to_datetime(df_sezione[col_data], dayfirst=True, errors='coerce').dt.to_period('M').astype(str)
-            df_sezione[col_importo] = pd.to_numeric(df_sezione[col_importo], errors='coerce').fillna(0)
+            df_sezione[col_importo] = -pd.to_numeric(df_sezione[col_importo], errors='coerce').fillna(0)
 
             # Tabella Pivot
             pivot_df = df_sezione.pivot_table(
                 index="Mese", 
                 columns="Mappatura", 
-                values=col_importo, 
+                values=-col_importo, 
                 aggfunc="sum", 
                 fill_value=0
             )
