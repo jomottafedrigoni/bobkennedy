@@ -9,7 +9,6 @@ st.set_page_config(
 )
 
 st.title("📊 Rielaborazione Report Transazioni")
-st.markdown("Carica il file Excel delle transazioni per applicare la mappatura ed esplorare le analisi mensili.")
 
 # --- DIZIONARIO DI MAPPATURA AGGIORNATO ---
 MAPPATURA_DEFAULT = {
@@ -56,25 +55,29 @@ MAPPATURA_DEFAULT = {
     "07.01.01.180.01RITR_MAINT": "VIC - Maintenance"
 }
 
-# --- SEZIONE INFO DYNAMICS ---
-with st.expander("📌 Codici Conto per Filtro Dynamics (Clicca per espandere)", expanded=True):
-    # Estrazione dei soli codici conto (formato ##.##.##.###.##) dai primi 15 caratteri delle chiavi
-    codici_conto_unici = sorted(list(set([chiave[:15] for chiave in MAPPATURA_DEFAULT.keys()])))
-    
-    st.markdown("Usa questi codici per filtrare le transazioni direttamente su **Dynamics**.")
-    
-    col_tab, col_stringa = st.columns([1, 2])
-    
-    with col_tab:
-        df_codici = pd.DataFrame(codici_conto_unici, columns=["Codice Conto"])
-        st.dataframe(df_codici, hide_index=True, use_container_width=True)
-        
-    with col_stringa:
-        st.markdown("**Stringa pronta per il filtro Dynamics (OR):**")
-        stringa_dynamics = "|".join(codici_conto_unici)
-        st.code(stringa_dynamics, language="text")
+# --- CARICAMENTO FILE ---
+uploaded_excel = st.file_uploader("Carica il file Excel del Report (.xlsx, .xls)", type=["xlsx", "xls"])
 
-st.markdown("---")
+# --- SEZIONE INFO DYNAMICS (Visibile SOLO finché non carichi l'Excel) ---
+if uploaded_excel is None:
+    st.info("👋 **Benvenuto!** Copia i codici sottostanti per filtrare su Dynamics, poi carica il file esportato.")
+    
+    with st.expander("📌 Codici Conto per Filtro Dynamics", expanded=True):
+        # Estrazione codici unici
+        codici_conto_unici = sorted(list(set([chiave[:15] for chiave in MAPPATURA_DEFAULT.keys()])))
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**1. Elenco in colonna (seleziona e copia stile Excel):**")
+            # Un'area di testo puro da cui selezionare e copiare la colonna direttamente
+            testo_colonna = "\n".join(codici_conto_unici)
+            st.text_area("Copia colonna", testo_colonna, height=220)
+            
+        with col2:
+            st.markdown("**2. Stringa filtro con '|' (Filtro rapido Dynamics):**")
+            stringa_dynamics = "|".join(codici_conto_unici)
+            st.code(stringa_dynamics, language="text")
 
 def elabora_report(df):
     df_out = df.copy()
@@ -123,9 +126,7 @@ def elabora_report(df):
 
     return df_out, n_provvch, n_non_mappate
 
-# --- CARICAMENTO FILE ---
-uploaded_excel = st.file_uploader("Carica il file Excel del Report (.xlsx, .xls)", type=["xlsx", "xls"])
-
+# --- ELABORAZIONE REPORT (quando l'Excel è presente) ---
 if uploaded_excel is not None:
     try:
         df_input = pd.read_excel(uploaded_excel)
