@@ -184,14 +184,10 @@ if uploaded_excel is not None:
 
         # KPI DELLA SEZIONE SELEZIONATA (Invertito e in Migliaia)
         c1, c2 = st.columns(2)
-        c1.metric("Transazioni Trovate", len(df_sezione))
         
         col_importo = "Importo" if "Importo" in df_sezione.columns else None
         if col_importo:
             spesa_k = (df_sezione[col_importo].sum() * -1) / 1000.0
-            c2.metric("Spesa Totale Sezione (k€)", formatta_k_euro(spesa_k))
-
-        st.markdown("---")
 
         # --- SEZIONE REPORTING MENSILE (CALCOLATA IN MIGLIAIA CON SEGNO INVERTITO) ---
         st.subheader("📈 Report Sintetico Mensile (in k€)")
