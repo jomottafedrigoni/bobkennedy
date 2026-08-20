@@ -1,8 +1,14 @@
 import streamlit as st
 import pandas as pd
-import io
 import re
+import io
+import requests
 from datetime import datetime
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.utils import ImageReader
 
 st.set_page_config(
     page_title="Rielaborazione Report Transazioni & Budget",
@@ -50,9 +56,10 @@ MAPPATURA_DEFAULT = {
     "07.02.02.430.01RITR_OPIND": "Travel Expenses",
     "07.02.02.430.01RITR_QUAIND": "Travel Expenses",
     "07.02.02.430.05RITR_OPIND": "Travel Expenses",
-    "07.01.01.180.02RITR_MAINT": "VIC - Maintenance (VAR)",
-    "07.01.01.210.00RITR_MAINT": "VIC - Maintenance (VAR)",
-    "07.01.01.180.01RITR_MAINT": "VIC - Maintenance (VAR)"
+    "07.01.01.180.02RITR_MAINT": "Vic - Maintenance (Var)",
+    "07.01.01.210.00RITR_MAINT": "Vic - Maintenance (Var)",
+    "07.01.01.180.01RITR_MAINT": "Vic - Maintenance (Var)",
+    "07.01.01.210.00":"Vic - Maintenance (Var)"
 }
 
 MAP_MESI = {
@@ -71,6 +78,345 @@ uploaded_transazioni = st.sidebar.file_uploader("1. File Transazioni (ACT)", typ
 uploaded_fornitori = st.sidebar.file_uploader("2. File Anagrafica Fornitori", type=["xlsx", "xls"], key="fornitori")
 uploaded_budget = st.sidebar.file_uploader("3. File Budget (BDG)", type=["xlsx", "xls"], key="budget")
 
+@st.cache_data(ttl=3600)
+def scarica_logo():
+    import os
+    # Nomi e percorsi possibili
+    estensioni = ["logo.png", "logo.jpg", "logo.jpeg", "Logo.png", "Logo.jpg"]
+    
+    for nome in estensioni:
+        if os.path.exists(nome):
+            with open(nome, "rb") as f:
+                return f.read()
+    
+    # Se arriva qui, segnala in console il percorso dove sta cercando
+    print(f"DEBUG LOGO: Nessun logo trovato nella directory corrente: {os.getcwd()}")
+    return None
+
+def genera_pdf_report(df_act_f, df_bdg_f, anno_sel, mese_ref):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        rightMargin=20,
+        leftMargin=20,
+        topMargin=50,
+        bottomMargin=20
+    )
+    
+    styles = getSampleStyleSheet()
+    
+    title_style = ParagraphStyle('CoverTitle', parent=styles['Title'], fontSize=24, leading=28, alignment=1, textColor=colors.HexColor('#000000'))
+    subtitle_style = ParagraphStyle('CoverSubtitle', parent=styles['Normal'], fontSize=11, leading=16, alignment=1, textColor=colors.HexColor('#444444'))
+    disclaimer_style = ParagraphStyle('CoverDisclaimer', parent=styles['Normal'], fontSize=9, leading=13, alignment=1, textColor=colors.HexColor('#666666'))
+    
+    header_style = ParagraphStyle('PageHeader', parent=styles['Heading1'], fontSize=13, leading=16, textColor=colors.HexColor('#1A1A1A'), spaceAfter=10)
+    sub_header_style = ParagraphStyle('SubHeader', parent=styles['Heading2'], fontSize=10, leading=12, textColor=colors.HexColor('#222222'), spaceBefore=8, spaceAfter=6)
+    
+    header_cell = ParagraphStyle('HCell', parent=styles['Normal'], fontSize=7, leading=8, fontName='Helvetica-Bold', textColor=colors.white, alignment=1)
+    num_style = ParagraphStyle('NCell', parent=styles['Normal'], fontSize=7, leading=8, textColor=colors.black, alignment=2)
+    num_bold = ParagraphStyle('NBold', parent=styles['Normal'], fontSize=7, leading=8, fontName='Helvetica-Bold', textColor=colors.black, alignment=2)
+    txt_style = ParagraphStyle('TCell', parent=styles['Normal'], fontSize=7, leading=8, textColor=colors.black, alignment=0)
+    txt_bold = ParagraphStyle('TBold', parent=styles['Normal'], fontSize=7, leading=8, fontName='Helvetica-Bold', textColor=colors.black, alignment=0)
+
+    logo_bytes = scarica_logo()
+
+    def aggiungi_logo_header(canvas, doc):
+        canvas.saveState()
+        if logo_bytes:
+            try:
+                img_data = io.BytesIO(logo_bytes)
+                img = ImageReader(img_data)
+                # Disegna il logo in alto a sinistra (X: 20, Y: 545 su foglio A4 Landscape)
+                canvas.drawImage(img, 20, 535, width=100, height=40, preserveAspectRatio=True, mask='auto')
+            except Exception as e:
+                print(f"DEBUG LOGO PDF ERROR: {e}")
+        canvas.restoreState()
+    def formatta_contabile(val):
+        if val == 0 or pd.isna(val):
+            return "-"
+        val_ass = abs(val)
+        str_val = f"{val_ass:,.1f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"({str_val})" if val < 0 else str_val
+
+    story = []
+
+    story.append(Spacer(1, 80))
+    story.append(Paragraph("Report Mensile Costi Fissi e Manutenzione Variabile", title_style))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph(f"Data Report: {datetime.now().strftime('%d/%m/%Y')}", subtitle_style))
+    story.append(Spacer(1, 30))
+    
+    subtext = (
+        "<b>Ritrama S.p.A. - Industrial Controlling Team</b><br/><br/>"
+        "Il presente documento è rivolto unicamente ai Plant Director degli stabilimenti di Ritrama S.p.A. "
+        "di Basiano, Caponago e Sassoferrato.<br/>"
+        "Le informazioni contenute nel report sono strettamente confidenziali, riservate e destinate ad uso interno. "
+        "Ne è severamente vietata la riproduzione, la diffusione o la condivisione con soggetti non autorizzati, "
+        "sia all'interno che all'esterno dell'organizzazione.<br/><br/>"
+        "Per chiarimenti sui dati contenuti nel report o richieste di approfondimento analitico, fare riferimento a:<br/>"
+        "• <b>Industrial Controller Italy:</b> Jona Motta (jona.motta@fedrigoni.com)<br/>"
+        "• <b>Group Industrial Controller:</b> Roberto Ghirardi (roberto.ghirardi@fedrigoni.com)"
+    )
+    story.append(Paragraph(subtext, disclaimer_style))
+    story.append(PageBreak())
+
+    def crea_tabella_actual(df_source, is_vic=False, escludi_voci=[]):
+        # Mappatura dei conti contabili VIC con la loro descrizione estesa
+        MAP_CONTI_VIC = {
+            "07.01.01.180.01": "MATERIALI DI CONSUMO - MANUTENZIONI",
+            "07.01.01.210.00": "MATERIALI PER ANTINFORTUNISTICO",
+            "07.01.01.180.02": "SPESE DI MANUTENZIONE"
+        }
+
+        if is_vic:
+            df_sub = df_source[df_source["Mappatura"] == "Vic - Maintenance (Var)"].copy()
+            col_group = "Conto Contabile" if "Conto Contabile" in df_sub.columns else "Mappatura"
+            
+            # Mappiamo i codici conto con le descrizioni per le intestazioni della tabella
+            if col_group == "Conto Contabile":
+                df_sub[col_group] = df_sub[col_group].astype(str).str.strip()
+                df_sub[col_group] = df_sub[col_group].map(lambda x: MAP_CONTI_VIC.get(x, x))
+        else:
+            df_sub = df_source[~df_source["Mappatura"].isin(escludi_voci)].copy()
+            col_group = "Mappatura"
+
+        if df_sub.empty:
+            return Paragraph("<i>Nessun dato Actual disponibile.</i>", txt_style)
+            
+        piv = df_sub.pivot_table(index="Mese", columns=col_group, values="Importo_ACT_kEUR", aggfunc="sum", fill_value=0)
+        piv["TOTALE MENSILE"] = piv.sum(axis=1)
+        tot_map = piv.sum(axis=0)
+        tot_map.name = "TOTALE"
+        piv_full = pd.concat([piv, pd.DataFrame(tot_map).T])
+
+        headers = ["Mese"] + [str(c) for c in piv_full.columns]
+        table_data = [[Paragraph(h, header_cell) for h in headers]]
+
+        for idx, row in piv_full.iterrows():
+            is_tot = (str(idx) == "TOTALE")
+            r_data = [Paragraph(str(idx), txt_bold if is_tot else txt_style)]
+            for val in row:
+                r_data.append(Paragraph(formatta_contabile(val), num_bold if is_tot else num_style))
+            table_data.append(r_data)
+
+        col_w = [45] + [(735 / (len(headers) - 1))] * (len(headers) - 1)
+        t = Table(table_data, colWidths=col_w, repeatRows=1)
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1A1A1A')),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#CCCCCC')),
+            ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#F4F4F4')),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ]))
+        return t
+
+    def crea_tabella_act_vs_bdg(df_act_sub, df_bdg_sub, is_vic=False, escludi_voci=[]):
+        delta_red = ParagraphStyle('DRed', parent=styles['Normal'], fontSize=6, leading=7, textColor=colors.HexColor('#C00000'), alignment=2)
+        delta_red_bold = ParagraphStyle('DRedB', parent=styles['Normal'], fontSize=6, leading=7, fontName='Helvetica-Bold', textColor=colors.HexColor('#C00000'), alignment=2)
+        delta_green = ParagraphStyle('DGreen', parent=styles['Normal'], fontSize=6, leading=7, textColor=colors.HexColor('#008000'), alignment=2)
+        delta_green_bold = ParagraphStyle('DGreenB', parent=styles['Normal'], fontSize=6, leading=7, fontName='Helvetica-Bold', textColor=colors.HexColor('#008000'), alignment=2)
+        
+        num_s = ParagraphStyle('NCellS', parent=styles['Normal'], fontSize=6, leading=7, textColor=colors.black, alignment=2)
+        num_b = ParagraphStyle('NBoldS', parent=styles['Normal'], fontSize=6, leading=7, fontName='Helvetica-Bold', textColor=colors.black, alignment=2)
+        txt_s = ParagraphStyle('TCellS', parent=styles['Normal'], fontSize=6, leading=7, textColor=colors.black, alignment=0)
+        txt_b = ParagraphStyle('TBoldS', parent=styles['Normal'], fontSize=6, leading=7, fontName='Helvetica-Bold', textColor=colors.black, alignment=0)
+
+        def get_delta_style(v_delta, is_bold=False):
+            if v_delta < -0.01:
+                return delta_green_bold if is_bold else delta_green
+            elif v_delta > 0.01:
+                return delta_red_bold if is_bold else delta_red
+            return num_b if is_bold else num_s
+
+        # CASO 1: VIC (Tabella Sintetica 4 colonne)
+        if is_vic:
+            df_act_cf = df_act_sub[df_act_sub["Mappatura"] == "Vic - Maintenance (Var)"]
+            df_bdg_cf = df_bdg_sub[df_bdg_sub["Mappatura"] == "Vic - Maintenance (Var)"]
+
+            piv_act_tot = df_act_cf.pivot_table(index="Mese", values="Importo_ACT_kEUR", aggfunc="sum", fill_value=0)
+            piv_bdg_tot = df_bdg_cf.pivot_table(index="Mese", values="Importo_BDG_kEUR", aggfunc="sum", fill_value=0)
+
+            header_row1 = [Paragraph("Mese", header_cell), Paragraph("VIC TOTALE ACT", header_cell), Paragraph("VIC TOTALE BDG", header_cell), Paragraph("VIC TOTALE Delta", header_cell)]
+            table_data = [header_row1]
+            mesi_list = [f"{anno_sel}-{i:02d}" for i in range(1, 13)]
+            
+            tot_act_gen, tot_bdg_gen = 0.0, 0.0
+            for m_str in mesi_list:
+                m_breve = m_str[5:] if len(m_str) >= 7 else m_str
+                v_act = piv_act_tot.loc[m_str, "Importo_ACT_kEUR"] if m_str in piv_act_tot.index else 0.0
+                v_bdg = piv_bdg_tot.loc[m_str, "Importo_BDG_kEUR"] if m_str in piv_bdg_tot.index else 0.0
+                v_delta = v_bdg - v_act
+                tot_act_gen += v_act
+                tot_bdg_gen += v_bdg
+
+                table_data.append([
+                    Paragraph(m_breve, txt_s),
+                    Paragraph(formatta_contabile(v_act), num_s),
+                    Paragraph(formatta_contabile(v_bdg), num_s),
+                    Paragraph(formatta_contabile(v_delta), get_delta_style(v_delta))
+                ])
+
+            tot_delta_gen = tot_bdg_gen - tot_act_gen
+            table_data.append([
+                Paragraph("TOT", txt_b),
+                Paragraph(formatta_contabile(tot_act_gen), num_b),
+                Paragraph(formatta_contabile(tot_bdg_gen), num_b),
+                Paragraph(formatta_contabile(tot_delta_gen), get_delta_style(tot_delta_gen, is_bold=True))
+            ])
+
+            t = Table(table_data, colWidths=[60, 230, 230, 230], repeatRows=1)
+            t.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1A1A1A')),
+                ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+                ('GRID', (0, 0), (-1, -1), 0.3, colors.HexColor('#CCCCCC')),
+                ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#F4F4F4')),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+                ('TOPPADDING', (0, 0), (-1, -1), 2),
+            ]))
+            return t
+
+        # CASO 2: COSTI FISSI (Matrice Dettagliata per Categoria)
+        df_act_cf = df_act_sub[~df_act_sub["Mappatura"].isin(escludi_voci)]
+        df_bdg_cf = df_bdg_sub[~df_bdg_sub["Mappatura"].isin(escludi_voci)]
+
+        piv_act = df_act_cf.pivot_table(index="Mese", columns="Mappatura", values="Importo_ACT_kEUR", aggfunc="sum", fill_value=0)
+        piv_bdg = df_bdg_cf.pivot_table(index="Mese", columns="Mappatura", values="Importo_BDG_kEUR", aggfunc="sum", fill_value=0)
+
+        cats = sorted(list(set(piv_act.columns).union(set(piv_bdg.columns))))
+        if not cats:
+            return Paragraph("<i>Nessun dato Costi Fissi disponibile.</i>", txt_s)
+
+        # Riga 1: Headers Macro
+        h_row1 = [Paragraph("M", header_cell)]
+        for c in cats:
+            h_row1.extend([Paragraph(c, header_cell), "", ""])
+        h_row1.extend([Paragraph("TOT", header_cell), "", ""])
+
+        # Riga 2: Headers Sub-colonne (ACT, BDG, Δ)
+        h_row2 = [""]
+        for _ in range(len(cats) + 1):
+            h_row2.extend([Paragraph("ACT", header_cell), Paragraph("BDG", header_cell), Paragraph("&Delta;", header_cell)])
+
+        table_data = [h_row1, h_row2]
+        mesi_list = [f"{anno_sel}-{i:02d}" for i in range(1, 13)]
+
+        tot_act_cats = {c: 0.0 for c in cats}
+        tot_bdg_cats = {c: 0.0 for c in cats}
+        tot_act_gen, tot_bdg_gen = 0.0, 0.0
+
+        for m_str in mesi_list:
+            m_breve = m_str[5:] if len(m_str) >= 7 else m_str
+            row = [Paragraph(m_breve, txt_s)]
+            m_act_tot, m_bdg_tot = 0.0, 0.0
+
+            for c in cats:
+                v_act = piv_act.loc[m_str, c] if (m_str in piv_act.index and c in piv_act.columns) else 0.0
+                v_bdg = piv_bdg.loc[m_str, c] if (m_str in piv_bdg.index and c in piv_bdg.columns) else 0.0
+                v_delta = v_bdg - v_act
+
+                tot_act_cats[c] += v_act
+                tot_bdg_cats[c] += v_bdg
+                m_act_tot += v_act
+                m_bdg_tot += v_bdg
+
+                row.extend([
+                    Paragraph(formatta_contabile(v_act), num_s),
+                    Paragraph(formatta_contabile(v_bdg), num_s),
+                    Paragraph(formatta_contabile(v_delta), get_delta_style(v_delta))
+                ])
+
+            m_delta_tot = m_bdg_tot - m_act_tot
+            tot_act_gen += m_act_tot
+            tot_bdg_gen += m_bdg_tot
+
+            row.extend([
+                Paragraph(formatta_contabile(m_act_tot), num_b),
+                Paragraph(formatta_contabile(m_bdg_tot), num_b),
+                Paragraph(formatta_contabile(m_delta_tot), get_delta_style(m_delta_tot, is_bold=True))
+            ])
+            table_data.append(row)
+
+        # Riga Totali Finali
+        tot_row = [Paragraph("TOT", txt_b)]
+        for c in cats:
+            v_act = tot_act_cats[c]
+            v_bdg = tot_bdg_cats[c]
+            v_delta = v_bdg - v_act
+            tot_row.extend([
+                Paragraph(formatta_contabile(v_act), num_b),
+                Paragraph(formatta_contabile(v_bdg), num_b),
+                Paragraph(formatta_contabile(v_delta), get_delta_style(v_delta, is_bold=True))
+            ])
+
+        tot_delta_gen = tot_bdg_gen - tot_act_gen
+        tot_row.extend([
+            Paragraph(formatta_contabile(tot_act_gen), num_b),
+            Paragraph(formatta_contabile(tot_bdg_gen), num_b),
+            Paragraph(formatta_contabile(tot_delta_gen), get_delta_style(tot_delta_gen, is_bold=True))
+        ])
+        table_data.append(tot_row)
+
+        num_cols = 1 + (len(cats) + 1) * 3
+        col_w = [25] + [(732 / (num_cols - 1))] * (num_cols - 1)
+
+        t_style = [
+            ('BACKGROUND', (0, 0), (-1, 1), colors.HexColor('#1A1A1A')),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('GRID', (0, 0), (-1, -1), 0.3, colors.HexColor('#CCCCCC')),
+            ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#F4F4F4')),
+            ('SPAN', (0, 0), (0, 1)),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 1.5),
+            ('TOPPADDING', (0, 0), (-1, -1), 1.5),
+        ]
+
+        col_idx = 1
+        for _ in range(len(cats) + 1):
+            t_style.append(('SPAN', (col_idx, 0), (col_idx + 2, 0)))
+            col_idx += 3
+
+        t = Table(table_data, colWidths=col_w, repeatRows=2)
+        t.setStyle(TableStyle(t_style))
+        return t
+
+    voci_fisse_escluse_act = ["Vic - Maintenance (Var)", "Insurance", "Intercompany"]
+    voci_fisse_escluse_bdg = voci_fisse_escluse_act + ["Spare Parts And Equipments", "Subscription And Associations Fees"]
+
+    sezioni = [
+        ("Ritrama S.p.A. - Tutti gli Stabilimenti", df_act_f, df_bdg_f),
+        ("Ritrama S.p.A. - Stabilimento di Basiano", df_act_f[df_act_f["Stabilimento"] == "RITR-BAS"], df_bdg_f[df_bdg_f["PLANT"] == "RITR-BAS"]),
+        ("Ritrama S.p.A. - Stabilimento di Caponago", df_act_f[df_act_f["Stabilimento"] == "RITR-CAP"], df_bdg_f[df_bdg_f["PLANT"] == "RITR-CAP"]),
+        ("Ritrama S.p.A. - Stabilimento di Sassoferrato", df_act_f[df_act_f["Stabilimento"] == "RITR-SAS"], df_bdg_f[df_bdg_f["PLANT"] == "RITR-SAS"]),
+        ("Ritrama S.p.A. - Stabilimento di Headquarter", df_act_f[df_act_f["Stabilimento"] == "RITR-HQ"], df_bdg_f[df_bdg_f["PLANT"] == "RITR-HQ"])
+    ]
+
+    for i, (titolo, df_act_sub, df_bdg_sub) in enumerate(sezioni):
+        story.append(Paragraph(f"<b>{titolo} - Costi Fissi</b>", header_style))
+        story.append(Paragraph("1. Costi Fissi - Actual MTD (in k€)", sub_header_style))
+        story.append(crea_tabella_actual(df_act_sub, is_vic=False, escludi_voci=voci_fisse_escluse_act))
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("2. Costi Fissi - Actual vs Budget MTD (in k€)", sub_header_style))
+        story.append(crea_tabella_act_vs_bdg(df_act_sub, df_bdg_sub, is_vic=False, escludi_voci=voci_fisse_escluse_bdg))
+        story.append(PageBreak())
+
+        story.append(Paragraph(f"<b>{titolo} - Costi Variabili di Manutenzione (VIC)</b>", header_style))
+        story.append(Paragraph("1. Costi Variabili per Conto - Actual MTD (in k€)", sub_header_style))
+        story.append(crea_tabella_actual(df_act_sub, is_vic=True))
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("2. Costi Variabili - Actual vs Budget MTD (in k€)", sub_header_style))
+        story.append(crea_tabella_act_vs_bdg(df_act_sub, df_bdg_sub, is_vic=True))
+
+        if i < len(sezioni) - 1:
+            story.append(PageBreak())
+
+    doc.build(story, onFirstPage=aggiungi_logo_header, onLaterPages=aggiungi_logo_header)
+    buffer.seek(0)
+    return buffer.getvalue()
+
 def formatta_k_euro(val):
     if pd.isna(val) or round(val, 2) == 0:
         return "-"
@@ -83,7 +429,6 @@ def colora_colonne_fornitori(df):
         return df
 
     styles = pd.DataFrame('', index=df.index, columns=df.columns)
-    
     for col in df.columns:
         col_str = str(col)
         is_tot_col = "TOTALE" in col_str.upper()
@@ -103,7 +448,6 @@ def colora_colonne_fornitori(df):
         for idx in df.index:
             idx_str = str(idx).upper()
             is_tot_row = "TOTALE" in idx_str
-            
             style = base_style
 
             if "Delta" in col_str:
@@ -157,11 +501,8 @@ def to_excel_download(df):
 
 def elabora_report(df_trans, df_forn):
     df_out = df_trans.copy()
-
-    # 1. Pulizia preventiva dei nomi delle colonne da spazi extra
     df_out.columns = df_out.columns.astype(str).str.strip()
 
-    # 2. Identificazione dinamica della colonna Descrizione/Testo
     col_desc_trovata = None
     nomi_possibili = [
         "Descrizione", "Testo", "Descrizione transazione", 
@@ -173,33 +514,29 @@ def elabora_report(df_trans, df_forn):
             col_desc_trovata = col
             break
 
-    # Assegnazione del contenuto della descrizione
-    if col_desc_trovata:
-        df_out["Descrizione"] = df_out[col_desc_trovata].fillna("-").astype(str)
-    else:
-        df_out["Descrizione"] = "-"
+    df_out["Descrizione"] = df_out[col_desc_trovata].fillna("-").astype(str) if col_desc_trovata else "-"
 
-    # 3. Filtro Giustificativo PROVVCH
     if "Giustificativo" in df_out.columns:
         maschera_provvch = df_out["Giustificativo"].astype(str).str.startswith("PROVVCH", na=False)
         df_out = df_out[~maschera_provvch]
 
-    # 4. Conversioni Numeriche
     for col in ["Importo nella valuta della transazione", "Importo", "Importo nella valuta di dichiarazione"]:
         if col in df_out.columns:
             df_out[col] = pd.to_numeric(df_out[col], errors='coerce').fillna(0)
 
-    # 5. Mappatura Fornitori
     mppa_fornitori = {}
     if "Account fornitore" in df_forn.columns and "Nome" in df_forn.columns:
         df_forn["Account_Clean"] = df_forn["Account fornitore"].astype(str).str.strip()
         mppa_fornitori = dict(zip(df_forn["Account_Clean"], df_forn["Nome"]))
 
-    # 6. Mappatura Conto, Plant e Fornitore
     if "Valore visualizzato conto" in df_out.columns:
         def estrai_chiave(val):
             parti = str(val).split('-')
             return f"{parti[0].strip()}{parti[1].strip()}" if len(parti) >= 2 else str(val).strip()
+
+        def estrai_conto_contabile(val):
+            match = re.search(r'(\d{2}\.\d{2}\.\d{2}\.\d{3}\.\d{2})', str(val))
+            return match.group(1) if match else str(val).split('-')[0].strip()
 
         def estrai_stab(val):
             match = re.search(r'(RITR-(?:SAS|CAP|BAS|HQ|CPN))', str(val), re.IGNORECASE)
@@ -213,6 +550,7 @@ def elabora_report(df_trans, df_forn):
             return parti[-1] if parti else ""
 
         df_out["Codice Mappatura Estratto"] = df_out["Valore visualizzato conto"].apply(estrai_chiave)
+        df_out["Conto Contabile"] = df_out["Valore visualizzato conto"].apply(estrai_conto_contabile)
         df_out["Mappatura"] = df_out["Codice Mappatura Estratto"].map(MAPPATURA_DEFAULT).str.title()
         df_out["Stabilimento"] = df_out["Valore visualizzato conto"].apply(estrai_stab)
         df_out["Codice Fornitore Estratto"] = df_out["Valore visualizzato conto"].apply(estrai_cod_forn)
@@ -222,7 +560,6 @@ def elabora_report(df_trans, df_forn):
             df_out["Codice Fornitore Estratto"].apply(lambda x: f"Cod. {x}" if x else "Non Definito")
         )
 
-        # Scarto delle righe non mappate (Costi centrali/HQ)
         df_out = df_out[df_out["Mappatura"].notna()].copy()
 
     return df_out
@@ -230,7 +567,6 @@ def elabora_report(df_trans, df_forn):
 if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
     try:
         df_act_raw = pd.read_excel(uploaded_transazioni)
-
         df_forn_raw = pd.read_excel(uploaded_fornitori)
         df_bdg_raw = pd.read_excel(uploaded_budget)
 
@@ -253,25 +589,20 @@ if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
             st.sidebar.markdown("---")
             st.sidebar.header("🔍 Filtri")
             
-            # 1. Filtro Anno
             anni_disponibili = sorted([a for a in df_act["Anno"].unique() if a != "nan"], reverse=True)
             anno_sel = st.sidebar.selectbox("Seleziona Anno:", anni_disponibili, index=0)
 
             df_bdg = processa_budget(df_bdg_raw, anno_ref=int(anno_sel) if anno_sel else 2026)
 
-            # 2. Filtro Plant
             plants = sorted(list(set(df_act["Stabilimento"].unique()).union(set(df_bdg["PLANT"].unique()))))
             plant_sel = st.sidebar.selectbox("Seleziona Plant:", ["TUTTI I PLANT"] + plants)
 
-            # 3. Filtro Mappatura
             mappature_totali = sorted(list(set(df_act["Mappatura"].unique()).union(set(df_bdg["Mappatura"].unique()))))
             mappatura_sel = st.sidebar.multiselect("Seleziona Voce di Spesa:", options=mappature_totali, default=[])
 
-            # 4. Filtro Fornitore
             fornitori_totali = sorted(list(set(df_act["Fornitore"].unique()).union(set(df_bdg["Supplier"].unique()))))
             fornitore_sel = st.sidebar.selectbox("Seleziona Fornitore:", ["TUTTI I FORNITORI"] + fornitori_totali)
 
-            # Applicazione Filtri Base
             df_act_f = df_act[df_act["Anno"] == anno_sel]
             df_bdg_f = df_bdg.copy()
 
@@ -287,7 +618,6 @@ if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
                 df_act_f = df_act_f[df_act_f["Fornitore"] == fornitore_sel]
                 df_bdg_f = df_bdg_f[df_bdg_f["Supplier"] == fornitore_sel]
 
-            # 5. Filtro Mesi
             mesi_disponibili = sorted(list(set(df_act_f["Mese"].unique()).union(set(df_bdg_f["Mese"].unique()))))
             mesi_sel = st.sidebar.multiselect("Seleziona Mesi:", options=mesi_disponibili, default=[])
 
@@ -305,9 +635,11 @@ if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
                 if pagina == "📌 Fixed Costs (Costi Fissi)":
                     df_sezione = df_act_f_mesi[df_act_f_mesi["Mappatura"] != "Vic - Maintenance (Var)"].copy()
                     st.header("📌 Fixed Costs - Dettaglio Analisi Spese")
+                    col_raggruppamento = "Mappatura"
                 else:
                     df_sezione = df_act_f_mesi[df_act_f_mesi["Mappatura"] == "Vic - Maintenance (Var)"].copy()
-                    st.header("⚙️ Variable Costs - Dettaglio Analisi Spese")
+                    st.header("⚙️ Variable Costs - Dettaglio Analisi Spese per Conto Contabile")
+                    col_raggruppamento = "Conto Contabile" if "Conto Contabile" in df_sezione.columns else "Mappatura"
 
                 oggi = datetime.now()
                 mese_prec_num = 12 if oggi.month == 1 else oggi.month - 1
@@ -329,11 +661,11 @@ if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
                 c2.metric(f"Totale MTD ({m_max})", f"{formatta_k_euro(s_mtd)} k€")
                 st.markdown("---")
 
-                st.subheader("📈 Actual MTD (in k€)")
-                piv_mensile = df_sezione.pivot_table(index="Mese", columns="Mappatura", values="Importo_ACT_kEUR", aggfunc="sum", fill_value=0)
+                st.subheader(f"📈 Actual MTD per {col_raggruppamento} (in k€)")
+                piv_mensile = df_sezione.pivot_table(index="Mese", columns=col_raggruppamento, values="Importo_ACT_kEUR", aggfunc="sum", fill_value=0)
                 piv_mensile["TOTALE MENSILE"] = piv_mensile.sum(axis=1)
                 tot_map = piv_mensile.sum(axis=0)
-                tot_map.name = "TOTALE PER MAPPATURA"
+                tot_map.name = "TOTALE"
                 piv_mensile_full = pd.concat([piv_mensile, pd.DataFrame(tot_map).T])
                 st.dataframe(piv_mensile_full.style.format(formatta_k_euro), use_container_width=True)
 
@@ -342,8 +674,8 @@ if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
                 st.bar_chart(piv_plant)
 
                 st.markdown("---")
-                st.subheader("🏢 ACT per Fornitore YTD (in k€)")
-                piv_ytd = df_sezione.pivot_table(index="Fornitore", columns="Mappatura", values="Importo_ACT_kEUR", aggfunc="sum", fill_value=0)
+                st.subheader(f"🏢 ACT per Fornitore YTD - {col_raggruppamento} (in k€)")
+                piv_ytd = df_sezione.pivot_table(index="Fornitore", columns=col_raggruppamento, values="Importo_ACT_kEUR", aggfunc="sum", fill_value=0)
                 piv_ytd["TOTALE FORNITORE"] = piv_ytd.sum(axis=1)
                 piv_ytd = piv_ytd.sort_values(by="TOTALE FORNITORE", ascending=False)
                 tot_cat = piv_ytd.sum(axis=0)
@@ -351,13 +683,10 @@ if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
                 piv_ytd_full = pd.concat([piv_ytd, pd.DataFrame(tot_cat).T])
                 st.dataframe(piv_ytd_full.style.format(formatta_k_euro), use_container_width=True)
 
-                # ==========================================
-                # DETTAGLIO TRANSAZIONI CON DESCRIZIONE
-                # ==========================================
                 st.markdown("---")
                 st.subheader("📋 Dettaglio Analitico Transazioni per Fornitore")
                 
-                cols_dettaglio = [c for c in [col_data, "Mappatura", "Fornitore", "Stabilimento", "Importo_ACT_kEUR", "Descrizione"] if c in df_sezione.columns]
+                cols_dettaglio = [c for c in [col_data, "Conto Contabile", "Mappatura", "Fornitore", "Stabilimento", "Importo_ACT_kEUR", "Descrizione"] if c in df_sezione.columns]
                 df_dett = df_sezione[cols_dettaglio].copy()
                 if "Importo_ACT_kEUR" in df_dett.columns:
                     df_dett = df_dett.rename(columns={"Importo_ACT_kEUR": "Importo (k€)"})
@@ -365,6 +694,14 @@ if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
                 st.dataframe(
                     df_dett.style.format({"Importo (k€)": formatta_k_euro}),
                     use_container_width=True
+                )
+
+                pdf_bytes = genera_pdf_report(df_act_f, df_bdg_f, anno_sel, mese_chiuso_ref)
+                st.download_button(
+                    label="📄 Scarica Report PDF per Plant Directors",
+                    data=pdf_bytes,
+                    file_name=f"Report_Costi_{anno_sel}.pdf",
+                    mime="application/pdf"
                 )
 
             # ==========================================
@@ -449,104 +786,51 @@ if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
                         use_container_width=True
                     )
 
-                    st.markdown("---")
-
-                    st.subheader("MTD Actual vs Budget per Fornitore e Voce di Spesa")
-                    map_singola = st.selectbox("Seleziona Voce di Spesa:", all_maps if all_maps else ["Tutte"])
-
-                    if map_singola:
-                        df_act_m2 = df_act_f[df_act_f["Mappatura"] == map_singola]
-                        df_bdg_m2 = df_bdg_f[df_bdg_f["Mappatura"] == map_singola]
-
-                        fornitori_unici = sorted(list(set(df_act_m2["Fornitore"].unique()).union(set(df_bdg_m2["Supplier"].unique()))))
-
-                        piv_act_f = df_act_m2.pivot_table(index="Fornitore", columns="Mese", values="Importo_ACT_kEUR", aggfunc="sum", fill_value=0)
-                        piv_bdg_f = df_bdg_m2.pivot_table(index="Supplier", columns="Mese", values="Importo_BDG_kEUR", aggfunc="sum", fill_value=0)
-
-                        if "YTD" in tipo_vista:
-                            piv_act_f = piv_act_f.cumsum(axis=1).ffill(axis=1)
-                            piv_bdg_f = piv_bdg_f.cumsum(axis=1).ffill(axis=1)
-
-                        rows_mod2 = []
-                        for forn in fornitori_unici:
-                            r = {"Fornitore": forn}
-                            for idx, m_code in enumerate(MESI_LISTA, 1):
-                                m_str = f"{anno_sel}-{idx:02d}"
-                                v_act = piv_act_f.loc[forn, m_str] if (forn in piv_act_f.index and m_str in piv_act_f.columns) else 0.0
-                                v_bdg = piv_bdg_f.loc[forn, m_str] if (forn in piv_bdg_f.index and m_str in piv_bdg_f.columns) else 0.0
-                                
-                                r[f"ACT {m_code}"] = v_act
-                                r[f"BDG {m_code}"] = v_bdg
-                                r[f"Delta {m_code}"] = v_bdg - v_act
-
-                            if "YTD" in tipo_vista:
-                                r["TOTALE ACT"] = r[f"ACT {MESI_LISTA[-1]}"]
-                                r["TOTALE BDG"] = r[f"BDG {MESI_LISTA[-1]}"]
-                            else:
-                                r["TOTALE ACT"] = sum([r[f"ACT {m_code}"] for m_code in MESI_LISTA])
-                                r["TOTALE BDG"] = sum([r[f"BDG {m_code}"] for m_code in MESI_LISTA])
-
-                            r["TOTALE Delta"] = r["TOTALE BDG"] - r["TOTALE ACT"]
-                            rows_mod2.append(r)
-
-                        df_mod2 = pd.DataFrame(rows_mod2).set_index("Fornitore")
-
-                        tot_cols = df_mod2.sum(axis=0)
-                        df_tot_mod2 = pd.DataFrame(tot_cols).T
-                        df_tot_mod2.index = ["TOTALE FORNITORI"]
-                        df_mod2_full = pd.concat([df_mod2, df_tot_mod2])
-
-                        st.dataframe(
-                            df_mod2_full.style.format(formatta_k_euro).apply(colora_colonne_fornitori, axis=None),
-                            use_container_width=True
-                        )
-
                 else:
                     st.header("⚙️ Variable Costs - Maintenance (VAR)")
-                    st.subheader("MTD / YTD Actual vs Budget")
+                    st.subheader("MTD / YTD Actual vs Budget Totale VIC")
 
                     df_act_v = df_act_f[df_act_f["Mappatura"] == "Vic - Maintenance (Var)"]
                     df_bdg_v = df_bdg_f[df_bdg_f["Mappatura"] == "Vic - Maintenance (Var)"]
 
-                    piv_act_v = df_act_v.pivot_table(index="Mese", values="Importo_ACT_kEUR", aggfunc="sum", fill_value=0)
-                    piv_bdg_v = df_bdg_v.pivot_table(index="Mese", values="Importo_BDG_kEUR", aggfunc="sum", fill_value=0)
+                    piv_act_v_tot = df_act_v.pivot_table(index="Mese", values="Importo_ACT_kEUR", aggfunc="sum", fill_value=0)
+                    piv_bdg_v_tot = df_bdg_v.pivot_table(index="Mese", values="Importo_BDG_kEUR", aggfunc="sum", fill_value=0)
 
                     mesi_completi = [f"{anno_sel}-{idx:02d}" for idx in range(1, 13)]
-                    piv_act_v = piv_act_v.reindex(mesi_completi, fill_value=0)
-                    piv_bdg_v = piv_bdg_v.reindex(mesi_completi, fill_value=0)
+                    piv_act_v_tot = piv_act_v_tot.reindex(mesi_completi, fill_value=0)
+                    piv_bdg_v_tot = piv_bdg_v_tot.reindex(mesi_completi, fill_value=0)
 
                     if "YTD" in tipo_vista:
-                        piv_act_v = piv_act_v.cumsum(axis=0).ffill()
-                        piv_bdg_v = piv_bdg_v.cumsum(axis=0).ffill()
+                        piv_act_v_tot = piv_act_v_tot.cumsum(axis=0).ffill()
+                        piv_bdg_v_tot = piv_bdg_v_tot.cumsum(axis=0).ffill()
 
                     rows_v = []
+                    
                     for idx, m_code in enumerate(MESI_LISTA, 1):
                         m_str = f"{anno_sel}-{idx:02d}"
-                        v_act = piv_act_v.loc[m_str, "Importo_ACT_kEUR"] if m_str in piv_act_v.index else 0.0
-                        v_bdg = piv_bdg_v.loc[m_str, "Importo_BDG_kEUR"] if m_str in piv_bdg_v.index else 0.0
-                        
-                        rows_v.append({
-                            "Mese": f"{m_code} ({m_str})",
-                            "Man Var ACT k€": v_act,
-                            "Man Var BDG k€": v_bdg,
-                            "Delta k€": v_bdg - v_act
-                        })
+                        r = {"Mese": f"{m_code} ({m_str})"}
+
+                        v_act_tot = piv_act_v_tot.loc[m_str, "Importo_ACT_kEUR"] if m_str in piv_act_v_tot.index else 0.0
+                        v_bdg_tot = piv_bdg_v_tot.loc[m_str, "Importo_BDG_kEUR"] if m_str in piv_bdg_v_tot.index else 0.0
+
+                        r["VIC Manutenzione ACT"] = v_act_tot
+                        r["VIC Manutenzione BDG"] = v_bdg_tot
+                        r["VIC Manutenzione Delta"] = v_bdg_tot - v_act_tot
+                        rows_v.append(r)
 
                     df_mod3 = pd.DataFrame(rows_v).set_index("Mese")
 
+                    tot_dict_v = {}
                     if "YTD" in tipo_vista:
-                        tot_act_v = df_mod3["Man Var ACT k€"].iloc[-1]
-                        tot_bdg_v = df_mod3["Man Var BDG k€"].iloc[-1]
+                        for col in df_mod3.columns:
+                            tot_dict_v[col] = df_mod3.iloc[-1][col]
+                        tot_dict_v["VIC Manutenzione Delta"] = tot_dict_v["VIC Manutenzione BDG"] - tot_dict_v["VIC Manutenzione ACT"]
                     else:
-                        tot_act_v = df_mod3["Man Var ACT k€"].sum()
-                        tot_bdg_v = df_mod3["Man Var BDG k€"].sum()
+                        for col in df_mod3.columns:
+                            tot_dict_v[col] = df_mod3[col].sum()
+                        tot_dict_v["VIC Manutenzione Delta"] = tot_dict_v["VIC Manutenzione BDG"] - tot_dict_v["VIC Manutenzione ACT"]
 
-                    df_tot_mod3 = pd.DataFrame([{
-                        "Man Var ACT k€": tot_act_v,
-                        "Man Var BDG k€": tot_bdg_v,
-                        "Delta k€": tot_bdg_v - tot_act_v
-                    }], index=["TOTALE ANNO"])
-
+                    df_tot_mod3 = pd.DataFrame([tot_dict_v], index=["TOTALE ANNO"])
                     df_mod3_full = pd.concat([df_mod3, df_tot_mod3])
 
                     st.dataframe(
@@ -554,13 +838,8 @@ if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
                         use_container_width=True
                     )
 
-                # ==========================================
-                # VISUALIZZAZIONE & DOWNLOAD DATAFRAME BUDGET
-                # ==========================================
                 st.markdown("---")
                 st.subheader("📥 Dettaglio e Download Budget Elaborato")
-                st.write("Di seguito la tabella con il Budget rielaborato e filtrato secondo i parametri selezionati:")
-
                 st.dataframe(
                     df_bdg_f.style.format({"Importo_BDG_kEUR": formatta_k_euro, "Importo_BDG_Orig": "{:,.2f}"}),
                     use_container_width=True
