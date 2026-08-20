@@ -8,7 +8,6 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.utils import ImageReader
 
 st.set_page_config(
     page_title="Rielaborazione Report Transazioni & Budget",
@@ -78,21 +77,6 @@ uploaded_transazioni = st.sidebar.file_uploader("1. File Transazioni (ACT)", typ
 uploaded_fornitori = st.sidebar.file_uploader("2. File Anagrafica Fornitori", type=["xlsx", "xls"], key="fornitori")
 uploaded_budget = st.sidebar.file_uploader("3. File Budget (BDG)", type=["xlsx", "xls"], key="budget")
 
-@st.cache_data(ttl=3600)
-def scarica_logo():
-    import os
-    # Nomi e percorsi possibili
-    estensioni = ["logo.png", "logo.jpg", "logo.jpeg", "Logo.png", "Logo.jpg"]
-    
-    for nome in estensioni:
-        if os.path.exists(nome):
-            with open(nome, "rb") as f:
-                return f.read()
-    
-    # Se arriva qui, segnala in console il percorso dove sta cercando
-    print(f"DEBUG LOGO: Nessun logo trovato nella directory corrente: {os.getcwd()}")
-    return None
-
 def genera_pdf_report(df_act_f, df_bdg_f, anno_sel, mese_ref):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -100,7 +84,7 @@ def genera_pdf_report(df_act_f, df_bdg_f, anno_sel, mese_ref):
         pagesize=landscape(A4),
         rightMargin=20,
         leftMargin=20,
-        topMargin=50,
+        topMargin=30,
         bottomMargin=20
     )
     
@@ -119,19 +103,6 @@ def genera_pdf_report(df_act_f, df_bdg_f, anno_sel, mese_ref):
     txt_style = ParagraphStyle('TCell', parent=styles['Normal'], fontSize=7, leading=8, textColor=colors.black, alignment=0)
     txt_bold = ParagraphStyle('TBold', parent=styles['Normal'], fontSize=7, leading=8, fontName='Helvetica-Bold', textColor=colors.black, alignment=0)
 
-    logo_bytes = scarica_logo()
-
-    def aggiungi_logo_header(canvas, doc):
-        canvas.saveState()
-        if logo_bytes:
-            try:
-                img_data = io.BytesIO(logo_bytes)
-                img = ImageReader(img_data)
-                # Disegna il logo in alto a sinistra (X: 20, Y: 545 su foglio A4 Landscape)
-                canvas.drawImage(img, 20, 535, width=100, height=40, preserveAspectRatio=True, mask='auto')
-            except Exception as e:
-                print(f"DEBUG LOGO PDF ERROR: {e}")
-        canvas.restoreState()
     def formatta_contabile(val):
         if val == 0 or pd.isna(val):
             return "-"
@@ -141,7 +112,10 @@ def genera_pdf_report(df_act_f, df_bdg_f, anno_sel, mese_ref):
 
     story = []
 
-    story.append(Spacer(1, 80))
+    # ==========================================
+    # PAGINA 0: COPERTINA
+    # ==========================================
+    story.append(Spacer(1, 40))
     story.append(Paragraph("Report Mensile Costi Fissi e Manutenzione Variabile", title_style))
     story.append(Spacer(1, 10))
     story.append(Paragraph(f"Data Report: {datetime.now().strftime('%d/%m/%Y')}", subtitle_style))
@@ -162,7 +136,6 @@ def genera_pdf_report(df_act_f, df_bdg_f, anno_sel, mese_ref):
     story.append(PageBreak())
 
     def crea_tabella_actual(df_source, is_vic=False, escludi_voci=[]):
-        # Mappatura dei conti contabili VIC con la loro descrizione estesa
         MAP_CONTI_VIC = {
             "07.01.01.180.01": "MATERIALI DI CONSUMO - MANUTENZIONI",
             "07.01.01.210.00": "MATERIALI PER ANTINFORTUNISTICO",
@@ -173,7 +146,6 @@ def genera_pdf_report(df_act_f, df_bdg_f, anno_sel, mese_ref):
             df_sub = df_source[df_source["Mappatura"] == "Vic - Maintenance (Var)"].copy()
             col_group = "Conto Contabile" if "Conto Contabile" in df_sub.columns else "Mappatura"
             
-            # Mappiamo i codici conto con le descrizioni per le intestazioni della tabella
             if col_group == "Conto Contabile":
                 df_sub[col_group] = df_sub[col_group].astype(str).str.strip()
                 df_sub[col_group] = df_sub[col_group].map(lambda x: MAP_CONTI_VIC.get(x, x))
@@ -231,7 +203,6 @@ def genera_pdf_report(df_act_f, df_bdg_f, anno_sel, mese_ref):
                 return delta_red_bold if is_bold else delta_red
             return num_b if is_bold else num_s
 
-        # CASO 1: VIC (Tabella Sintetica 4 colonne)
         if is_vic:
             df_act_cf = df_act_sub[df_act_sub["Mappatura"] == "Vic - Maintenance (Var)"]
             df_bdg_cf = df_bdg_sub[df_bdg_sub["Mappatura"] == "Vic - Maintenance (Var)"]
@@ -279,7 +250,6 @@ def genera_pdf_report(df_act_f, df_bdg_f, anno_sel, mese_ref):
             ]))
             return t
 
-        # CASO 2: COSTI FISSI (Matrice Dettagliata per Categoria)
         df_act_cf = df_act_sub[~df_act_sub["Mappatura"].isin(escludi_voci)]
         df_bdg_cf = df_bdg_sub[~df_bdg_sub["Mappatura"].isin(escludi_voci)]
 
@@ -290,13 +260,11 @@ def genera_pdf_report(df_act_f, df_bdg_f, anno_sel, mese_ref):
         if not cats:
             return Paragraph("<i>Nessun dato Costi Fissi disponibile.</i>", txt_s)
 
-        # Riga 1: Headers Macro
         h_row1 = [Paragraph("M", header_cell)]
         for c in cats:
             h_row1.extend([Paragraph(c, header_cell), "", ""])
         h_row1.extend([Paragraph("TOT", header_cell), "", ""])
 
-        # Riga 2: Headers Sub-colonne (ACT, BDG, Δ)
         h_row2 = [""]
         for _ in range(len(cats) + 1):
             h_row2.extend([Paragraph("ACT", header_cell), Paragraph("BDG", header_cell), Paragraph("&Delta;", header_cell)])
@@ -340,7 +308,6 @@ def genera_pdf_report(df_act_f, df_bdg_f, anno_sel, mese_ref):
             ])
             table_data.append(row)
 
-        # Riga Totali Finali
         tot_row = [Paragraph("TOT", txt_b)]
         for c in cats:
             v_act = tot_act_cats[c]
@@ -413,7 +380,7 @@ def genera_pdf_report(df_act_f, df_bdg_f, anno_sel, mese_ref):
         if i < len(sezioni) - 1:
             story.append(PageBreak())
 
-    doc.build(story, onFirstPage=aggiungi_logo_header, onLaterPages=aggiungi_logo_header)
+    doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
 
@@ -700,7 +667,7 @@ if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
                 st.download_button(
                     label="📄 Scarica Report PDF per Plant Directors",
                     data=pdf_bytes,
-                    file_name=f"Report_Costi_{anno_sel}.pdf",
+                    file_name=f"Report_Costi_{mese_chiuso_ref}.pdf",
                     mime="application/pdf"
                 )
 
