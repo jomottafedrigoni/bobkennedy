@@ -88,27 +88,24 @@ def colora_colonne_fornitori(df):
         col_str = str(col)
         is_tot_col = "TOTALE" in col_str.upper()
 
-        # Stile base per colonna normale o colonna di totale
         if "ACT" in col_str:
-            bg_color = '#d9d9d9' if is_tot_col else '#f2f2f2'  # Grigio più scuro per i totali
+            bg_color = '#d9d9d9' if is_tot_col else '#f2f2f2'
             base_style = f'background-color: {bg_color}; color: black;'
         elif "BDG" in col_str:
-            bg_color = '#e6e6e6' if is_tot_col else '#ffffff'  # Grigio chiaro/scuro per budget
+            bg_color = '#e6e6e6' if is_tot_col else '#ffffff'
             base_style = f'background-color: {bg_color}; color: black;'
         elif "Delta" in col_str:
-            bg_color = '#b3d8ff' if is_tot_col else '#e6f2ff'  # Blu più scuro per i totali Delta
+            bg_color = '#b3d8ff' if is_tot_col else '#e6f2ff'
             base_style = f'background-color: {bg_color};'
         else:
             base_style = ''
 
-        # Applicazione stile per riga e colonna
         for idx in df.index:
             idx_str = str(idx).upper()
             is_tot_row = "TOTALE" in idx_str
             
             style = base_style
 
-            # Se si tratta di un Delta, applica la logica dei colori (Rosso/Verde)
             if "Delta" in col_str:
                 val = df.loc[idx, col]
                 if isinstance(val, (int, float)):
@@ -119,10 +116,8 @@ def colora_colonne_fornitori(df):
                     else:
                         style += ' color: black;'
 
-            # Applica Bold se è una colonna di Totale O una riga di Totale
             if is_tot_col or is_tot_row:
                 style += ' font-weight: bold;'
-                # Se la riga è TOTALE e non è Delta, scurisce leggermente lo sfondo
                 if is_tot_row and "Delta" not in col_str:
                     style += ' background-color: #d0d0d0;'
                 elif is_tot_row and "Delta" in col_str:
@@ -154,22 +149,53 @@ def processa_budget(df_bdg, anno_ref=2026):
     
     return df_melt
 
+def to_excel_download(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Budget_Elaborato')
+    return output.getvalue()
+
 def elabora_report(df_trans, df_forn):
     df_out = df_trans.copy()
 
+    # 1. Pulizia preventiva dei nomi delle colonne da spazi extra
+    df_out.columns = df_out.columns.astype(str).str.strip()
+
+    # 2. Identificazione dinamica della colonna Descrizione/Testo
+    col_desc_trovata = None
+    nomi_possibili = [
+        "Descrizione", "Testo", "Descrizione transazione", 
+        "Testo dell'intestazione del documento", "Testo posizione", "Designazione"
+    ]
+    
+    for col in nomi_possibili:
+        if col in df_out.columns:
+            col_desc_trovata = col
+            break
+
+    # Assegnazione del contenuto della descrizione
+    if col_desc_trovata:
+        df_out["Descrizione"] = df_out[col_desc_trovata].fillna("-").astype(str)
+    else:
+        df_out["Descrizione"] = "-"
+
+    # 3. Filtro Giustificativo PROVVCH
     if "Giustificativo" in df_out.columns:
         maschera_provvch = df_out["Giustificativo"].astype(str).str.startswith("PROVVCH", na=False)
         df_out = df_out[~maschera_provvch]
 
+    # 4. Conversioni Numeriche
     for col in ["Importo nella valuta della transazione", "Importo", "Importo nella valuta di dichiarazione"]:
         if col in df_out.columns:
             df_out[col] = pd.to_numeric(df_out[col], errors='coerce').fillna(0)
 
+    # 5. Mappatura Fornitori
     mppa_fornitori = {}
     if "Account fornitore" in df_forn.columns and "Nome" in df_forn.columns:
         df_forn["Account_Clean"] = df_forn["Account fornitore"].astype(str).str.strip()
         mppa_fornitori = dict(zip(df_forn["Account_Clean"], df_forn["Nome"]))
 
+    # 6. Mappatura Conto, Plant e Fornitore
     if "Valore visualizzato conto" in df_out.columns:
         def estrai_chiave(val):
             parti = str(val).split('-')
@@ -196,12 +222,15 @@ def elabora_report(df_trans, df_forn):
             df_out["Codice Fornitore Estratto"].apply(lambda x: f"Cod. {x}" if x else "Non Definito")
         )
 
-        df_out = df_out[df_out["Mappatura"].notna()]
+        # Scarto delle righe non mappate (Costi centrali/HQ)
+        df_out = df_out[df_out["Mappatura"].notna()].copy()
+
     return df_out
 
 if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
     try:
         df_act_raw = pd.read_excel(uploaded_transazioni)
+
         df_forn_raw = pd.read_excel(uploaded_fornitori)
         df_bdg_raw = pd.read_excel(uploaded_budget)
 
@@ -270,7 +299,7 @@ if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
             tab_dettaglio, tab_act_bdg = st.tabs(["📊 Report Analisi Spese", "⚖️ ACT vs BDG"])
 
             # ==========================================
-            # TAB 1: METRICHE E REPORTE SULLE TRANSAZIONI
+            # TAB 1: METRICHE E REPORT TRANSAZIONI
             # ==========================================
             with tab_dettaglio:
                 if pagina == "📌 Fixed Costs (Costi Fissi)":
@@ -322,15 +351,30 @@ if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
                 piv_ytd_full = pd.concat([piv_ytd, pd.DataFrame(tot_cat).T])
                 st.dataframe(piv_ytd_full.style.format(formatta_k_euro), use_container_width=True)
 
+                # ==========================================
+                # DETTAGLIO TRANSAZIONI CON DESCRIZIONE
+                # ==========================================
+                st.markdown("---")
+                st.subheader("📋 Dettaglio Analitico Transazioni per Fornitore")
+                
+                cols_dettaglio = [c for c in [col_data, "Mappatura", "Fornitore", "Stabilimento", "Importo_ACT_kEUR", "Descrizione"] if c in df_sezione.columns]
+                df_dett = df_sezione[cols_dettaglio].copy()
+                if "Importo_ACT_kEUR" in df_dett.columns:
+                    df_dett = df_dett.rename(columns={"Importo_ACT_kEUR": "Importo (k€)"})
+                
+                st.dataframe(
+                    df_dett.style.format({"Importo (k€)": formatta_k_euro}),
+                    use_container_width=True
+                )
+
             # ==========================================
-            # TAB 2: ACT VS BDG (CON LOGICA MTD / YTD)
+            # TAB 2: ACT VS BDG + EXCEL BUDGET
             # ==========================================
             with tab_act_bdg:
                 tipo_vista = st.radio("Orizzonte Temporale:", ["MTD (Valori Mensili Puntuali)", "YTD (Cumulato Progressivo Mese per Mese)"], horizontal=True)
 
                 if pagina == "📌 Fixed Costs (Costi Fissi)":
                     st.header("📌 Fixed Costs - Analisi ACT vs BDG")
-                    
                     st.subheader("MTD / YTD Actual vs Budget per Voce di Spesa")
 
                     df_act_m1 = df_act_f[df_act_f["Mappatura"] != "Vic - Maintenance (Var)"]
@@ -339,23 +383,17 @@ if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
                     piv_act_m = df_act_m1.pivot_table(index="Mese", columns="Mappatura", values="Importo_ACT_kEUR", aggfunc="sum", fill_value=0)
                     piv_bdg_m = df_bdg_m1.pivot_table(index="Mese", columns="Mappatura", values="Importo_BDG_kEUR", aggfunc="sum", fill_value=0)
 
-                    # Reindicizza entrambe le pivot su tutti i 12 mesi dell'anno
                     mesi_completi = [f"{anno_sel}-{idx:02d}" for idx in range(1, 13)]
                     piv_act_m = piv_act_m.reindex(mesi_completi, fill_value=0)
                     piv_bdg_m = piv_bdg_m.reindex(mesi_completi, fill_value=0)
 
                     if "YTD" in tipo_vista:
-                        # 1. Trova l'ultimo mese in cui esistono transazioni ACT reali
                         ultimo_mese_act = df_act_m1["Mese"].max() if len(df_act_m1) > 0 else None
-
-                        # 2. Calcola il cumulato progressivo
                         piv_act_m = piv_act_m.cumsum(axis=0)
                         piv_bdg_m = piv_bdg_m.cumsum(axis=0)
 
-                        # 3. Applica il Forward Fill dei dati ACT dopo l'ultimo mese consuntivato
                         if ultimo_mese_act and ultimo_mese_act in piv_act_m.index:
                             idx_ultimo = piv_act_m.index.get_loc(ultimo_mese_act)
-                            # Trascina il valore dell'ultimo mese consuntivato a tutti i mesi successivi
                             for c in piv_act_m.columns:
                                 piv_act_m.iloc[idx_ultimo+1:, piv_act_m.columns.get_loc(c)] = piv_act_m.iloc[idx_ultimo][c]
 
@@ -387,7 +425,6 @@ if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
 
                     df_mod1 = pd.DataFrame(rows_m1).set_index("Mese")
 
-                    # Calcolo Totali Anno dinamico
                     tot_dict = {}
                     if "YTD" in tipo_vista:
                         for col in df_mod1.columns:
@@ -474,7 +511,6 @@ if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
                     piv_act_v = df_act_v.pivot_table(index="Mese", values="Importo_ACT_kEUR", aggfunc="sum", fill_value=0)
                     piv_bdg_v = df_bdg_v.pivot_table(index="Mese", values="Importo_BDG_kEUR", aggfunc="sum", fill_value=0)
 
-                    # Reindicizza sui 12 mesi completi prima di fare cumsum + ffill
                     mesi_completi = [f"{anno_sel}-{idx:02d}" for idx in range(1, 13)]
                     piv_act_v = piv_act_v.reindex(mesi_completi, fill_value=0)
                     piv_bdg_v = piv_bdg_v.reindex(mesi_completi, fill_value=0)
@@ -498,7 +534,6 @@ if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
 
                     df_mod3 = pd.DataFrame(rows_v).set_index("Mese")
 
-                    # Calcolo Totali Anno VIC
                     if "YTD" in tipo_vista:
                         tot_act_v = df_mod3["Man Var ACT k€"].iloc[-1]
                         tot_bdg_v = df_mod3["Man Var BDG k€"].iloc[-1]
@@ -518,6 +553,26 @@ if uploaded_transazioni and uploaded_fornitori and uploaded_budget:
                         df_mod3_full.style.format(formatta_k_euro).apply(colora_colonne_fornitori, axis=None),
                         use_container_width=True
                     )
+
+                # ==========================================
+                # VISUALIZZAZIONE & DOWNLOAD DATAFRAME BUDGET
+                # ==========================================
+                st.markdown("---")
+                st.subheader("📥 Dettaglio e Download Budget Elaborato")
+                st.write("Di seguito la tabella con il Budget rielaborato e filtrato secondo i parametri selezionati:")
+
+                st.dataframe(
+                    df_bdg_f.style.format({"Importo_BDG_kEUR": formatta_k_euro, "Importo_BDG_Orig": "{:,.2f}"}),
+                    use_container_width=True
+                )
+
+                excel_data = to_excel_download(df_bdg_f)
+                st.download_button(
+                    label="📥 Scarica Budget in Excel (.xlsx)",
+                    data=excel_data,
+                    file_name=f"Budget_Elaborato_{anno_sel}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
     except Exception as e:
         st.error(f"Errore durante l'elaborazione dei dati: {e}")
